@@ -1,0 +1,276 @@
+<h3>SQL Queries</h3>
+
+<pre><code>
+--1
+WITH tbl1 AS
+(
+    SELECT 
+        YEAR(si.invoicedate) AS InvoiceYear,
+        SUM(sil.Quantity * sil.UnitPrice) AS IncomePerYear,
+        COUNT(DISTINCT MONTH(si.invoicedate)) AS NumberOfDistinctMonths
+    FROM sales.InvoiceLines sil
+    JOIN sales.Invoices si
+        ON sil.invoiceID = si.invoiceID
+    GROUP BY YEAR(si.invoicedate)
+),
+tbl2 AS
+(
+    SELECT 
+        tbl1.*,
+        IncomePerYear * 12 / NumberOfDistinctMonths AS YearlyLinearIncome,
+        LAG(IncomePerYear * 12 / NumberOfDistinctMonths, 1) 
+            OVER (ORDER BY InvoiceYear) AS PrevYearlyLinearIncome
+    FROM tbl1
+)
+SELECT 
+    tbl2.InvoiceYear, 
+    FORMAT(tbl2.IncomePerYear, 'N2') as IncomePerYear, 
+    tbl2.NumberOfDistinctMonths,
+    FORMAT(tbl2.YearlyLinearIncome, 'N2') AS YearlyLinearIncome,
+    FORMAT(
+        (YearlyLinearIncome - PrevYearlyLinearIncome) / PrevYearlyLinearIncome * 100,
+        'N2'
+    ) AS GrowthRate
+FROM tbl2
+ORDER BY InvoiceYear;
+
+--2
+WITH tbl AS
+(
+    SELECT 
+        YEAR(si.invoicedate) AS TheYear,
+        DATEPART(qq, si.invoicedate) AS TheQuarter,
+        c.CustomerName,
+        SUM(sil.Quantity * sil.UnitPrice) AS IncomePerYear,
+        DENSE_RANK() OVER (
+            PARTITION BY YEAR(si.invoicedate), DATEPART(qq, si.invoicedate)
+            ORDER BY SUM(sil.ExtendedPrice) DESC
+        ) AS DNR
+    FROM sales.InvoiceLines sil
+    JOIN sales.Invoices si
+        ON sil.invoiceID = si.invoiceID
+    JOIN sales.Customers c
+        ON c.CustomerID = si.CustomerID
+    GROUP BY 
+        YEAR(si.invoicedate),
+        DATEPART(qq, si.invoicedate),
+        c.CustomerName
+)
+SELECT tbl.*
+FROM tbl
+WHERE DNR <= 5
+ORDER BY TheYear, TheQuarter;
+
+--3
+SELECT TOP 10 WITH TIES
+       sil.StockItemID,
+       sil.Description AS StockItemName,
+       SUM(sil.ExtendedPrice - sil.TaxAmount) AS TotalProfit
+FROM sales.InvoiceLines sil
+GROUP BY
+       sil.StockItemID,
+       sil.Description
+ORDER BY
+       TotalProfit DESC;
+
+--4
+SELECT  
+       ROW_NUMBER() OVER (ORDER BY wsi.RecommendedRetailPrice - wsi.UnitPrice DESC) AS Rn,
+       wsi.StockItemID,
+       wsi.StockItemName,
+       wsi.UnitPrice,
+       wsi.RecommendedRetailPrice,
+       wsi.RecommendedRetailPrice - wsi.UnitPrice AS NominalProductProfit,
+       DENSE_RANK() OVER (ORDER BY wsi.RecommendedRetailPrice - wsi.UnitPrice DESC) AS DNR
+FROM Warehouse.StockItems wsi;
+
+--5
+SELECT CONCAT(ps.SupplierID, ' - ', ps.SupplierName) AS SupplierDetails,
+       STRING_AGG(CONCAT(wsi.StockItemID, ' ', wsi.StockItemName), '/,')
+FROM Purchasing.Suppliers ps
+JOIN Warehouse.StockItems wsi
+    ON ps.SupplierID = wsi.SupplierID
+GROUP BY ps.SupplierID, SupplierName;
+
+--6
+SELECT TOP 5 WITH TIES
+       sc.CustomerID, 
+       act.CityName,
+       acn.CountryName,
+       acn.Continent,
+       acn.Region,
+       FORMAT(SUM(sil.ExtendedPrice), 'N2') AS TotalExtendedPrice
+FROM Sales.Customers sc
+JOIN Application.Cities act
+    ON act.CityID = sc.PostalCityID
+JOIN Application.StateProvinces asp
+    ON act.StateProvinceID = asp.StateProvinceID
+JOIN Application.Countries acn
+    ON acn.CountryID = asp.CountryID
+JOIN Sales.Invoices si
+    ON si.CustomerID = sc.CustomerID
+JOIN Sales.InvoiceLines sil
+    ON sil.InvoiceID = si.InvoiceID
+GROUP BY 
+       sc.CustomerID, 
+       act.CityName,
+       acn.CountryName,
+       acn.Continent,
+       acn.Region
+ORDER BY SUM(sil.ExtendedPrice) DESC;
+
+--7
+WITH tbl AS (
+    SELECT
+        YEAR(si.InvoiceDate)  AS InvoiceYear,
+        MONTH(si.InvoiceDate) AS InvoiceMonth,
+        SUM(sil.Quantity * sil.UnitPrice) AS MonthlyTotal
+    FROM Sales.Invoices si
+    JOIN Sales.InvoiceLines sil
+        ON si.InvoiceID = sil.InvoiceID
+    GROUP BY
+        YEAR(si.InvoiceDate),
+        MONTH(si.InvoiceDate)
+),
+tbl2 AS (
+    SELECT
+        tbl.InvoiceYear,
+        CAST(tbl.InvoiceMonth AS varchar(2)) AS InvoiceMonth,
+        MonthlyTotal,
+        SUM(MonthlyTotal) OVER (
+            PARTITION BY InvoiceYear
+            ORDER BY tbl.InvoiceMonth
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS CumulativeTotal,
+        tbl.InvoiceYear AS SortYear,
+        tbl.InvoiceMonth AS SortMonth
+    FROM tbl
+
+    UNION ALL
+
+    SELECT
+        InvoiceYear,
+        'Grand Total' AS InvoiceMonth,
+        SUM(MonthlyTotal) AS MonthlyTotal,
+        SUM(MonthlyTotal) AS CumulativeTotal,
+        InvoiceYear AS SortYear,
+        13 AS SortMonth
+    FROM tbl
+    GROUP BY InvoiceYear
+)
+SELECT
+    InvoiceYear,
+    InvoiceMonth,
+    FORMAT(MonthlyTotal, 'N2') AS MonthlyTotal,
+    FORMAT(CumulativeTotal, 'N2') AS CumulativeTotal
+FROM tbl2
+ORDER BY SortYear, SortMonth;
+
+--8
+WITH tbl AS
+(
+    SELECT 
+        YEAR(orderdate) AS OrderYear,
+        MONTH(orderdate) AS OrderMonth,
+        OrderID
+    FROM Sales.Orders
+)
+SELECT *
+FROM tbl
+PIVOT (
+    COUNT(orderid)
+    FOR orderyear IN ([2013], [2014], [2015], [2016])
+) AS pvt
+ORDER BY OrderMonth;
+
+--9
+WITH tbl1 AS
+(
+    SELECT 
+        sc.CustomerID, 
+        sc.CustomerName,
+        so.OrderDate,
+        LAG(so.orderdate, 1) OVER (
+            PARTITION BY sc.customerid 
+            ORDER BY so.orderdate
+        ) AS PreviousOrderDate
+    FROM sales.orders so
+    JOIN sales.Customers sc
+        ON so.CustomerID = sc.CustomerID
+),
+tbl2 AS
+(
+    SELECT 
+        sc.customerid,
+        MIN(so.orderdate) AS FirstOrder,
+        MAX(so.orderdate) AS LastOrder,
+        DATEDIFF(day, MIN(so.orderdate), MAX(so.orderdate)) / COUNT(orderdate) AS AvgDaysBetweenOrders
+    FROM sales.orders so
+    JOIN sales.Customers sc
+        ON so.CustomerID = sc.CustomerID
+    GROUP BY sc.CustomerID
+)
+SELECT 
+    tbl1.CustomerID,
+    tbl1.CustomerName,
+    tbl1.OrderDate,
+    tbl1.PreviousOrderDate,
+    tbl2.AvgDaysBetweenOrders,
+    tbl2.LastOrder AS LastCustOrderDate,
+    MAX(tbl1.OrderDate) OVER () AS LastOrderDateAll,
+    DATEDIFF(dd, tbl2.LastOrder, MAX(tbl1.OrderDate) OVER ()) AS DaysSinceLastOrder,
+    CASE
+        WHEN DATEDIFF(dd, tbl2.LastOrder, MAX(tbl1.OrderDate) OVER ()) > 2 * tbl2.AvgDaysBetweenOrders
+        THEN 'Potential Churn'
+        ELSE 'Active'
+    END AS CustomerStatus
+FROM tbl1
+JOIN tbl2
+    ON tbl1.CustomerID = tbl2.CustomerID
+ORDER BY tbl1.CustomerID, tbl1.OrderDate;
+
+--10
+WITH tbl1 AS
+(
+    SELECT DISTINCT
+        CASE
+            WHEN sc.CustomerName LIKE 'Tailspin%' THEN 'tail'
+            WHEN sc.CustomerName LIKE 'Wingtip%'  THEN 'wing'
+            ELSE sc.CustomerName
+        END AS customeridentify,
+        scc.CustomerCategoryName AS customercategoryname
+    FROM Sales.Customers sc
+    JOIN Sales.CustomerCategories scc
+        ON sc.CustomerCategoryID = scc.CustomerCategoryID
+),
+tbl2 AS
+(
+    SELECT
+        customercategoryname,
+        COUNT(customeridentify) AS customercount
+    FROM tbl1
+    GROUP BY customercategoryname
+),
+tbl3 AS
+(
+    SELECT
+        tbl1.customercategoryname,
+        tbl2.customercount,
+        COUNT(tbl1.customeridentify) OVER () AS totalcustcount
+    FROM tbl1
+    JOIN tbl2
+        ON tbl1.customercategoryname = tbl2.customercategoryname
+)
+SELECT DISTINCT
+    tbl3.*,
+    CONCAT(
+        CAST(
+            CAST(tbl3.customercount AS DECIMAL(5,2)) 
+            / tbl3.totalcustcount * 100 AS DECIMAL(5,2)),'%') AS distributionfactor
+FROM tbl3;
+
+
+
+
+
+</code></pre>
